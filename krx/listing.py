@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 import json
 import ssl
+from dateutil.relativedelta import relativedelta
 
 class KrxMarcapListing:
     def __init__(self, market):
@@ -44,7 +45,6 @@ class KrxMarcapListing:
                     'MKTCAP':'Marcap', 'LIST_SHRS':'Stocks', 'MKT_NM':'Market', 'MKT_ID': 'MarketId' }
         df = df.rename(columns=cols_map)
         df = df.reset_index(drop=True)
-        df.attrs = {'exchange':'KRX', 'source':'KRX', 'data':'LISTINGS'}
         return df
 
     
@@ -54,7 +54,7 @@ class KrxStockListing: # descriptive information
     
     def read(self):
         # KRX 상장회사목록
-        # For MacOS, SSL CERTIFICATION VERIFICATION ERROR
+        # For mac, SSL CERTIFICATION VERIFICATION ERROR
         ssl._create_default_https_context = ssl._create_unverified_context
         
         mkt_list = ['KRX-DESC', 'KOSPI-DESC', 'KOSDAQ-DESC', 'KONEX-DESC']
@@ -62,9 +62,7 @@ class KrxStockListing: # descriptive information
             raise ValueError(f"market shoud be one of {mkt_list}")
         
         url = 'http://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13'
-        r = requests.get(url)
-        dfs = pd.read_html(io.StringIO(r.text), header=0)
-        df_listing = dfs[0]
+        df_listing = pd.read_html(url, header=0)[0]
         cols_ren = {'회사명':'Name', '종목코드':'Code', '업종':'Sector', '주요제품':'Industry', 
                             '상장일':'ListingDate', '결산월':'SettleMonth',  '대표자명':'Representative', 
                             '홈페이지':'HomePage', '지역':'Region', }
@@ -75,6 +73,7 @@ class KrxStockListing: # descriptive information
         # KRX 주식종목검색
         data = {'bld': 'dbms/comm/finder/finder_stkisu',}
         r = requests.post('http://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd', data=data)
+
         jo = json.loads(r.text)
         df_finder = pd.DataFrame(jo['block1'])
         
@@ -97,8 +96,6 @@ class KrxStockListing: # descriptive information
         merged = pd.merge(df_left, df_right, how='left', left_on='Code', right_on='Code')
         if self.market in ['KONEX-DESC', 'KOSDAQ-DESC', 'KOSPI-DESC']:
             merged = merged[merged['Market']==self.market.replace('-DESC','')].reset_index(drop=True)
-        merged.attrs = {'exchange':'KRX', 'source':'KRX', 'data':'LISTINGS'}
-        merged = merged.drop_duplicates(subset='Code').reset_index(drop=True)
         return merged
 
 class KrxDelisting:
@@ -111,33 +108,42 @@ class KrxDelisting:
             'mktId': 'ALL',
             'isuCd': 'ALL',
             'isuCd2': 'ALL',
-            'strtDd': '19900101',
-            'endDd': '22001231',
+            'strtDd': '',
+            'endDd': '',
             'share': '1',
             'csvxls_isNo': 'true',
         }
-
-        headers = {'User-Agent': 'Chrome/78.0.3904.87 Safari/537.36',}
-
+        headers = {'User-Agent': 'Chrome/78.0.3904.87 Safari/537.36', }
         url = 'http://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd'
-        r = requests.post(url, data, headers=headers)
-        j = json.loads(r.text)
-        df = pd.DataFrame(j['output'])
-        col_map = {'ISU_CD':'Symbol', 'ISU_NM':'Name', 'MKT_NM':'Market', 
-                   'SECUGRP_NM':'SecuGroup', 'KIND_STKCERT_TP_NM':'Kind',
-                   'LIST_DD': 'ListingDate', 'DELIST_DD':'DelistingDate', 'DELIST_RSN_DSC':'Reason', 
-                   'ARRANTRD_MKTACT_ENFORCE_DD':'ArrantEnforceDate', 'ARRANTRD_END_DD':'ArrantEndDate', 
-                   'IDX_IND_NM':'Industry', 'PARVAL':'ParValue', 'LIST_SHRS':'ListingShares', 
-                   'TO_ISU_SRT_CD':'ToSymbol', 'TO_ISU_ABBRV':'ToName' }
+        strtdd = datetime.strptime('19900101', "%Y%m%d")
+        enddd = datetime.strptime('19911231', '%Y%m%d')
+        findd = datetime.strptime('21001231', '%Y%m%d')
+        dy = relativedelta(years=1)
+        col_map = {'ISU_CD': 'Symbol', 'ISU_NM': 'Name', 'MKT_NM': 'Market',
+                   'SECUGRP_NM': 'SecuGroup', 'KIND_STKCERT_TP_NM': 'Kind',
+                   'LIST_DD': 'ListingDate', 'DELIST_DD': 'DelistingDate', 'DELIST_RSN_DSC': 'Reason',
+                   'ARRANTRD_MKTACT_ENFORCE_DD': 'ArrantEnforceDate', 'ARRANTRD_END_DD': 'ArrantEndDate',
+                   'IDX_IND_NM': 'Industry', 'PARVAL': 'ParValue', 'LIST_SHRS': 'ListingShares',
+                   'TO_ISU_SRT_CD': 'ToSymbol', 'TO_ISU_ABBRV': 'ToName'}
 
-        df = df.rename(columns=col_map)
+        df = pd.DataFrame()
+        while enddd <= findd:
+            data['strtDd'] = strtdd.strftime('%Y%m%d')
+            data['endDd'] = enddd.strftime('%Y%m%d')
+            r = requests.post(url, data, headers=headers)
+            j = json.loads(r.text)
+
+            df = pd.concat([df, pd.DataFrame(j['output']).rename(columns=col_map)], axis=0)
+
+            strtdd += dy
+            enddd += dy
+
         df['ListingDate'] = pd.to_datetime(df['ListingDate'], format='%Y/%m/%d')
         df['DelistingDate'] = pd.to_datetime(df['DelistingDate'], format='%Y/%m/%d')
         df['ArrantEnforceDate'] = pd.to_datetime(df['ArrantEnforceDate'], format='%Y/%m/%d', errors='coerce')
         df['ArrantEndDate'] = pd.to_datetime(df['ArrantEndDate'], format='%Y/%m/%d', errors='coerce')
         df['ParValue'] = pd.to_numeric(df['ParValue'].str.replace(',', ''), errors='coerce')
         df['ListingShares'] = pd.to_numeric(df['ListingShares'].str.replace(',', ''), errors='coerce')
-        df.attrs = {'exchange':'KRX', 'source':'KRX', 'data':'LISTINGS'}
         return df
     
 class KrxAdministrative:
@@ -146,11 +152,9 @@ class KrxAdministrative:
 
     def read(self):
         url = "http://kind.krx.co.kr/investwarn/adminissue.do?method=searchAdminIssueSub&currentPageSize=5000&forward=adminissue_down"
-        r = requests.get(url)
-        df = pd.read_html(io.StringIO(r.text), header=0, encoding='euc-kr')[0]
+        df = pd.read_html(url, header=0)[0]
+        df['종목코드'] = df['종목코드'].apply(lambda x: '{:0>6d}'.format(x))
         df['지정일'] = pd.to_datetime(df['지정일'])
         col_map = {'종목코드':'Symbol', '종목명':'Name', '지정일':'DesignationDate', '지정사유':'Reason'}
         df.rename(columns=col_map, inplace=True)    
-        df.attrs = {'exchange':'KRX', 'source':'KRX', 'data':'LISTINGS'}
         return df[['Symbol', 'Name', 'DesignationDate', 'Reason']]    
-
